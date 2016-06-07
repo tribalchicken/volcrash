@@ -1,0 +1,99 @@
+diff -Naur crash-7.1.5/defs.h volcrash-7.1.5/defs.h
+--- crash-7.1.5/defs.h	2016-04-28 04:46:50.000000000 +1000
++++ volcrash-7.1.5/defs.h	2016-06-08 01:14:20.848211141 +1000
+@@ -193,6 +193,12 @@
+ };
+ 
+ /*
++ * program_context volflags
++ */
++#define VOLATILE_FLAG    (0x1)
++#define IS_VOLATILE()    (pc->volflags & VOLATILE_FLAG)
++
++/*
+  *  program_context flags
+  */
+ #define LIVE_SYSTEM                 (0x1ULL)
+@@ -401,6 +407,7 @@
+ 	char *gdb_version;              /* embedded gdb version */
+ 	char *prompt;                   /* this program's prompt */
+ 	unsigned long long flags;       /* flags from above */
++	unsigned long volflags;         /* volatile flags */
+ 	char *namelist;         	/* linux namelist */
+ 	char *dumpfile;         	/* dumpfile or /dev/kmem */ 
+ 	char *live_memsrc;              /* live memory driver */
+diff -Naur crash-7.1.5/filesys.c volcrash-7.1.5/filesys.c
+--- crash-7.1.5/filesys.c	2016-04-28 04:46:50.000000000 +1000
++++ volcrash-7.1.5/filesys.c	2016-06-08 00:57:51.740434860 +1000
+@@ -200,6 +200,14 @@
+ 			if (!proc_kcore_init(fp))
+ 				error(FATAL, 
+ 				    "/proc/kcore: initialization failed\n");
++  } else if(IS_VOLATILE()) {
++  		        if ((pc->mfd = open(pc->live_memsrc, O_RDWR)) < 0) {
++  			        if ((pc->mfd = open(pc->live_memsrc, O_RDONLY)) < 0)
++  			         error(FATAL, "%s: %s\n",pc->live_memsrc,strerror(errno));
++  		        } else
++  			{
++  			        pc->flags |= MFD_RDWR;
++                          }
+ 		} else
+ 			error(FATAL, "unknown memory device: %s\n",
+ 				pc->live_memsrc);
+diff -Naur crash-7.1.5/kernel.c volcrash-7.1.5/kernel.c
+--- crash-7.1.5/kernel.c	2016-04-28 04:46:50.000000000 +1000
++++ volcrash-7.1.5/kernel.c	2016-06-08 00:57:52.325392735 +1000
+@@ -1020,7 +1020,7 @@
+ 	if (!read_string(linux_banner, buf, BUFSIZE-1))
+ 		error(WARNING, "cannot read linux_banner string\n");
+ 
+-	if (ACTIVE()) {
++	if (ACTIVE() && !(IS_VOLATILE())) {
+ 		len = strlen(kt->proc_version);
+ 		if ((len > 0) && (strncmp(buf, kt->proc_version, len) != 0)) {
+                		if (CRASHDEBUG(1)) {
+diff -Naur crash-7.1.5/main.c volcrash-7.1.5/main.c
+--- crash-7.1.5/main.c	2016-04-28 04:46:50.000000000 +1000
++++ volcrash-7.1.5/main.c	2016-06-08 00:57:52.910350609 +1000
+@@ -60,6 +60,7 @@
+         {"reloc", required_argument, 0, 0},
+ 	{"kaslr", required_argument, 0, 0},
+ 	{"active", 0, 0, 0},
++	{"volatile", 0, 0, 0},
+ 	{"minimal", 0, 0, 0},
+ 	{"mod", required_argument, 0, 0},
+ 	{"kvmhost", required_argument, 0, 0},
+@@ -202,6 +203,8 @@
+ 				    file_exists("/usr/bin/less", NULL))
+ 					pc->scroll_command = SCROLL_LESS;
+ 			}
++			else if (STREQ(long_options[option_index].name, "volatile"))
++			                                pc->volflags |= VOLATILE_FLAG;
+ 
+ 		        else if (STREQ(long_options[option_index].name, "CRASHPAGER")) {
+ 				if ((pc->scroll_command != SCROLL_NONE) && 
+@@ -636,6 +639,12 @@
+                                 pc->dumpfile = argv[optind];
+                                 pc->readmem = read_s390_dumpfile;
+                                 pc->writemem = write_s390_dumpfile;
++} else if(IS_VOLATILE()) {
++                        			        pc->flags |= DEVMEM;
++                        				pc->dumpfile = NULL;
++                        				pc->readmem = read_dev_mem;
++                          			pc->writemem = write_dev_mem;
++                        				pc->live_memsrc = argv[optind];
+ 
+ 			} else if (is_sadump(argv[optind])) {
+ 				if ((pc->flags & MEMORY_SOURCES) &&
+diff -Naur crash-7.1.5/task.c volcrash-7.1.5/task.c
+--- crash-7.1.5/task.c	2016-04-28 04:46:50.000000000 +1000
++++ volcrash-7.1.5/task.c	2016-06-08 00:57:53.546304812 +1000
+@@ -495,6 +495,8 @@
+ 
+ 	if (ACTIVE()) {
+ 		active_pid = REMOTE() ? pc->server_pid : pc->program_pid; 
++		if(IS_VOLATILE())
++		    active_pid = 0;
+ 		set_context(NO_TASK, active_pid);
+ 		tt->this_task = pid_to_task(active_pid);
+ 	}
